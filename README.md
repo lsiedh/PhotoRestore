@@ -170,6 +170,7 @@ For each photo, the tool runs through this sequence:
    - **B&W path:** convert to luminance, stretch levels, lift shadows,
      save as a grayscale JPG.
    - **Color path:** correct white balance, stretch each channel,
+     correct nonlinear dye fading with a per-channel midtone gamma,
      lift shadows in a hue-preserving way, neutralize any residual
      color cast, save as an RGB JPG.
 4. **(Optional)** run dust and scratch removal.
@@ -627,6 +628,23 @@ white balance and stretching, if `|mean(a*)| > 3` or `|mean(b*)| > 3`,
 the mean is shifted toward zero by `alpha` of its value. Conservative
 on purpose — a sunset *should* be warm. Set `0` to disable.
 
+#### `--dye-strength FLOAT` (default `0.5`)
+
+Strength of the per-channel midtone gamma correction for nonlinear dye
+fading, on the color path. White balance and the level stretch are
+linear and only move the endpoints; photographic dye layers fade
+nonlinearly at different rates, so a faded print's midtones stay
+color-skewed even after both run. This stage takes each RGB channel's
+median, sets a neutral target at the geometric mean of the three
+medians (clamped to `[0.15, 0.85]`), and applies a per-channel gamma
+`g = log(target)/log(median)`, damped toward `1.0` by this factor.
+
+A near-grayscale image has near-equal medians, so all three gammas land
+at ~1.0 and the stage is a no-op. A genuinely warm or cool scene
+(sunset, candlelight) is only *partially* pulled toward neutral at the
+default `0.5`; lower it or set `0` to opt out entirely. The gammas
+actually applied are recorded as `dye_gamma_R/G/B` in the report CSV.
+
 ### Despeckle options
 
 All require `--despeckle` to be set.
@@ -724,6 +742,7 @@ Every column in the `--report` CSV:
 | `mean_a_in`, `mean_b_in`      | Input LAB a\*/b\* mean (signed, neutral=0).                      |
 | `black_pt_*`, `white_pt_*`    | Per-channel percentile values used for the stretch (0–1).        |
 | `illum_R/G/B`                 | Shades-of-Gray illuminant estimate, mean-normalized to 1.        |
+| `dye_gamma_R/G/B`             | Per-channel midtone gamma applied for dye fading (`1.0` = none). |
 | `mean_a_out`, `mean_b_out`    | Final LAB a\*/b\* mean after all corrections.                    |
 | `neutralization_applied`      | `True` if the damped LAB neutralization stage actually ran.      |
 | `shadow_p5_pre`               | Stretched-image L\* 5th percentile (input to the gamma solver).  |
@@ -757,13 +776,19 @@ under the hood. You don't need any of this to use the tool.
    overall exposure is preserved.
 2. **Per-channel percentile stretch** — same percentiles as B&W, but
    applied independently to each channel.
-3. **Adaptive shadow lift on LAB L\*** — gamma is applied only to the
+3. **Per-channel midtone gamma** — corrects nonlinear dye fading that
+   the linear white balance and stretch cannot. Each channel's median
+   is pulled toward the geometric mean of the three medians (clamped to
+   `[0.15, 0.85]`) via a gamma `g = log(target)/log(median)`, damped by
+   `--dye-strength`. Near-equal medians (a neutral image) → all gammas
+   ~1.0 → no-op.
+4. **Adaptive shadow lift on LAB L\*** — gamma is applied only to the
    perceptual lightness channel, so hue is preserved.
-4. **Damped LAB neutralization** — only runs if a residual cast
+5. **Damped LAB neutralization** — only runs if a residual cast
    remains (`|mean(a*)| > 3` or `|mean(b*)| > 3`). The mean is shifted
    toward zero by `--neutralize-strength` of its value. Conservative
    on purpose — a sunset *should* be warm.
-5. **Save** as an RGB JPG.
+6. **Save** as an RGB JPG.
 
 ### The classifier
 
@@ -903,7 +928,7 @@ isn't overwritten.
 
 | Path                | Purpose                                       |
 |---------------------|-----------------------------------------------|
-| `restore.py`        | The CLI tool. Everything is in this one file. |
+| `restore.py`        | Tone/color restoration + dust/scratch removal. |
 | `requirements.txt`  | Python dependencies.                          |
 | `Photos/`           | Conventional input folder for source TIFFs.   |
 | `Restored/`         | Conventional output folder.                   |

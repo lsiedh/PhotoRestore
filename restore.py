@@ -7,6 +7,7 @@ appropriate correction pipeline:
   B&W path:   Rec.709 luminance -> percentile stretch -> grayscale JPG.
   Color path: Shades-of-Gray white balance (Minkowski p=6)
               -> per-channel percentile stretch
+              -> per-channel midtone gamma (nonlinear dye-fading correction)
               -> damped LAB neutralization (only if residual cast remains)
               -> RGB JPG.
 
@@ -51,6 +52,9 @@ class Stats:
     illum_R: float = 1.0
     illum_G: float = 1.0
     illum_B: float = 1.0
+    dye_gamma_R: float = 1.0
+    dye_gamma_G: float = 1.0
+    dye_gamma_B: float = 1.0
     mean_a_out: float = 0.0
     mean_b_out: float = 0.0
     neutralization_applied: bool = False
@@ -116,6 +120,43 @@ def shades_of_gray_illuminant(rgb_f, p=6):
     illum = np.power(np.mean(np.power(flat, p), axis=0), 1.0 / p)
     illum = illum / illum.mean()
     return np.where(illum < 1e-6, 1e-6, illum)
+
+
+def per_channel_midtone_gamma(rgb_f, strength):
+    """Per-channel power-law correction for nonlinear dye fading.
+
+    White balance and percentile stretch are linear, so they cannot reshape a
+    channel's tone curve. Photographic dye layers fade nonlinearly and at
+    different rates, leaving the midtones of a faded print color-skewed even
+    after the endpoints are fixed. After WB + stretch, each channel's median
+    should match a common neutral midtone if no layer-specific fading occurred.
+
+    The geometric mean of the three channel medians is taken as that neutral
+    target; each channel gets a gamma g = log(target)/log(median) that maps its
+    median onto the target. The gamma is damped toward 1.0 by `strength` so an
+    intentionally warm/cool scene is only partially neutralized, never forced
+    gray. A near-grayscale image has near-equal medians, so all gammas land at
+    ~1.0 (effective no-op).
+
+    Returns (corrected float array in [0,1], [g_R, g_G, g_B]).
+    """
+    medians = np.array([float(np.percentile(rgb_f[..., c], 50)) for c in range(3)])
+    target = float(np.exp(np.mean(np.log(np.clip(medians, 1e-6, None)))))
+    target = float(np.clip(target, 0.15, 0.85))
+
+    out = rgb_f.copy()
+    gammas = []
+    for c in range(3):
+        m = float(medians[c])
+        if m < 0.02 or m > 0.98:
+            gammas.append(1.0)
+            continue
+        g = np.log(target) / np.log(m)
+        g = 1.0 + (g - 1.0) * strength
+        g = float(np.clip(g, 0.4, 2.5))
+        out[..., c] = np.power(np.clip(rgb_f[..., c], 1e-6, 1.0), g)
+        gammas.append(g)
+    return out, gammas
 
 
 def adaptive_shadow_gamma(p5, target, min_gamma):
@@ -306,7 +347,8 @@ def despeckle(img_u8, mode, min_size, max_size, threshold, scratch_len, edge_pro
 
 # ---------- pipelines ----------
 
-def restore_color(rgb_u8, p_lo, p_hi, alpha, shadow_target, shadow_min_gamma, stats):
+def restore_color(rgb_u8, p_lo, p_hi, alpha, shadow_target, shadow_min_gamma,
+                  dye_strength, stats):
     rgb_f = rgb_u8.astype(np.float32) / 255.0
 
     illum = shades_of_gray_illuminant(rgb_f, p=6)
@@ -323,6 +365,12 @@ def restore_color(rgb_u8, p_lo, p_hi, alpha, shadow_target, shadow_min_gamma, st
     (stats.black_pt_R, stats.white_pt_R) = pts[0]
     (stats.black_pt_G, stats.white_pt_G) = pts[1]
     (stats.black_pt_B, stats.white_pt_B) = pts[2]
+
+    if dye_strength > 0:
+        out, dye_gammas = per_channel_midtone_gamma(out, dye_strength)
+    else:
+        dye_gammas = [1.0, 1.0, 1.0]
+    stats.dye_gamma_R, stats.dye_gamma_G, stats.dye_gamma_B = dye_gammas
 
     out_u8 = (out * 255.0 + 0.5).astype(np.uint8)
 
@@ -407,7 +455,8 @@ def process_one(input_path, output_dir, args):
             out_u8, mode = restore_color(
                 rgb, args.black_point, args.white_point,
                 args.neutralize_strength,
-                args.shadow_target, args.shadow_min_gamma, stats,
+                args.shadow_target, args.shadow_min_gamma,
+                args.dye_strength, stats,
             )
 
         if args.despeckle:
@@ -462,6 +511,12 @@ def parse_args(argv=None):
     p.add_argument("--neutralize-strength", dest="neutralize_strength",
                    type=float, default=0.5,
                    help="alpha for residual LAB neutralization, 0 disables (default 0.5)")
+    p.add_argument("--dye-strength", dest="dye_strength", type=float, default=0.5,
+                   help="strength of per-channel midtone gamma correction for nonlinear "
+                        "dye fading, in [0,1] (default 0.5). Aligns each RGB channel's "
+                        "median toward the geometric mean of the three, damped by this "
+                        "factor. 0 disables (restores old linear-only color behavior); "
+                        "1.0 fully neutralizes midtones. Color path only.")
     p.add_argument("--shadow-target", dest="shadow_target", type=float, default=0.10,
                    help="target value for the 5th-percentile luminance after stretch "
                         "(default 0.10). When the stretched p5 is below this, an "
