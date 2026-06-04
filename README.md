@@ -33,8 +33,12 @@ of analog prints where retouching every photo by hand isn't realistic.
 
 - **Tonal correction** — stretches the levels so blacks are black and
   whites are white again, and gently brightens crushed shadows.
-- **White balance** — removes color casts caused by aged paper, dye
-  shifts, or scanner illumination.
+- **White balance** — removes overall color casts caused by aged paper
+  or scanner illumination.
+- **Nonlinear dye-fading correction** — color film dyes fade at
+  different rates and unevenly across the tonal range; a per-channel
+  midtone gamma rebalances them after white balance, recovering muddy
+  midtones that a linear correction alone can't reach.
 - **B&W vs. color routing** — looks at each photo and picks an
   appropriate pipeline. A stained black-and-white print won't be
   treated as a color photo just because the stain has hue.
@@ -295,8 +299,9 @@ python3 restore.py Photos Restored \
 python3 restore.py Photos Restored --shadow-target 0
 ```
 
-White balance, percentile stretch, and the neutral-cast correction
-still apply — only the adaptive shadow brightening is skipped.
+White balance, percentile stretch, dye-fading correction, and the
+neutral-cast correction still apply — only the adaptive shadow
+brightening is skipped.
 
 ### Higher-quality JPG with a custom suffix
 
@@ -343,6 +348,19 @@ python3 restore.py Photos Restored --neutralize-strength 0
 Useful when a warm or cool cast is part of the photo (sunsets,
 candlelit interiors, underwater shots). The default neutralization is
 already gentle, but `0` turns it off completely.
+
+### Soften or disable dye-fading correction
+
+```bash
+python3 restore.py Photos Restored --dye-strength 0.3   # gentler
+python3 restore.py Photos Restored --dye-strength 0     # off
+```
+
+The per-channel midtone gamma defaults to `0.5`. Lower it for a batch
+of intentionally warm/cool images where the default pulls the midtones
+too far toward neutral, or set `0` to disable it entirely and keep the
+old linear-only color behavior. The gammas actually applied are logged
+as `dye_gamma_R/G/B` in the report, so tune from there.
 
 ### Remove dust and thin scratches
 

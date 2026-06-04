@@ -27,6 +27,10 @@ python restore.py Photos Restored --jobs 1 --report report.csv
 
 # Enable dust/scratch removal
 python restore.py Photos Restored --despeckle
+
+# Soften or disable nonlinear dye-fading correction (color path)
+python restore.py Photos Restored --dye-strength 0.3   # gentler
+python restore.py Photos Restored --dye-strength 0     # off
 ```
 
 ## Architecture
